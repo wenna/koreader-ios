@@ -54,6 +54,7 @@ targets:
         OTHER_LDFLAGS:
           - -lluajit
           - -lSDL3
+          - -Wl,-export_dynamic
         # rpath so dyld finds the dylibs we copy into app/libs at post-build.
         LD_RUNPATH_SEARCH_PATHS:
           - $(inherited)
