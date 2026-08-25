@@ -68,6 +68,39 @@ jobs:
         run: |
           make TARGET=ios xcodeproj
 
+      - name: Generate Info.plist
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(git show -s --format=%cd --date=format:%Y.%m.%d HEAD)"
+
+          echo "========================================"
+          echo "Generating iOS Info.plist"
+          echo "Version: ${VERSION}"
+          echo "========================================"
+
+          test -f platform/ios/Info.plist.in
+
+          sed "s|@VERSION@|${VERSION}|g" \
+            platform/ios/Info.plist.in \
+            > platform/ios/Info.plist
+
+          test -s platform/ios/Info.plist
+
+          /usr/bin/plutil -lint platform/ios/Info.plist
+
+          echo
+          echo "Bundle ID:"
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleIdentifier" \
+            platform/ios/Info.plist
+
+          echo "Version:"
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleShortVersionString" \
+            platform/ios/Info.plist
+
       - name: Build unsigned iOS app
         run: |
           xcodebuild \
@@ -87,13 +120,20 @@ jobs:
 
           if [ ! -d "$APP_PATH" ]; then
             echo "KOReader.app not found"
-            find build/DerivedData/Build/Products -maxdepth 3 -type d -name "*.app" || true
+            find build/DerivedData/Build/Products \
+              -maxdepth 3 \
+              -type d \
+              -name "*.app" || true
             exit 1
           fi
 
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
+          echo "KOReader.app:"
           du -sh "$APP_PATH"
+
+          echo "Info.plist:"
+          /usr/bin/plutil -p "$APP_PATH/Info.plist" | head -50
 
       - name: Create unsigned IPA
         run: |
@@ -114,7 +154,12 @@ jobs:
 
       - name: Verify IPA
         run: |
-          unzip -l KOReader-unsigned.ipa | head -50
+          echo "IPA contents:"
+          unzip -l KOReader-unsigned.ipa | head -80
+
+          echo
+          echo "Architectures:"
+          file Payload/KOReader.app/KOReader
 
       - name: Upload IPA
         uses: actions/upload-artifact@v7
