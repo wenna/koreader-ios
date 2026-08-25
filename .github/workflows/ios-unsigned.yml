@@ -134,8 +134,9 @@ jobs:
 
           echo "Info.plist:"
           /usr/bin/plutil -p "$APP_PATH/Info.plist" | head -50
-            - name: Verify iOS bridge symbols
-         run: |
+          
+      - name: Verify iOS bridge symbols
+        run: |
           echo "=== Exported KOReader iOS bridge symbols ==="
 
           /usr/bin/nm -gU "$APP_PATH/KOReader" | grep "ko_ios_" || true
@@ -151,6 +152,7 @@ jobs:
           fi
 
           echo "OK: ko_ios_get_safe_area_pixels is exported"
+          
       - name: Create unsigned IPA
         run: |
           rm -rf Payload
