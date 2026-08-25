@@ -13,7 +13,7 @@
 */
 
 #import <Foundation/Foundation.h>
-
+#import <UIKit/UIKit.h>
 #include <SDL3/SDL_main.h>
 
 #include <stdio.h>
@@ -29,9 +29,321 @@
 #define LOGNAME "iOS loader"
 #define LANGUAGE "en_US.UTF-8"
 #define LUA_ERROR "failed to run lua chunk: %s\n"
+/* -------------------------------------------------------------------------
+ * TEMP DEBUG UI
+ * 仅用于排查 iOS 黑屏问题，定位完成后可整段删除。
+ * ------------------------------------------------------------------------- */
 
+static NSString *gKOReaderLogPath = nil;
+
+@interface KOReaderLogOverlay : NSObject
+@property(nonatomic, weak) UIWindow *mainWindow;
+@end
+
+@implementation KOReaderLogOverlay
+
+- (void)start
+{
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(windowBecameVisible:)
+               name:UIWindowDidBecomeVisibleNotification
+             object:nil];
+
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(windowBecameKey:)
+               name:UIWindowDidBecomeKeyNotification
+             object:nil];
+
+    if ([NSThread isMainThread]) {
+        [self installOnCurrentWindow];
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self installOnCurrentWindow];
+        });
+    }
+}
+
+- (void)windowBecameVisible:(NSNotification *)notification
+{
+    if ([notification.object isKindOfClass:[UIWindow class]]) {
+        [self installButtonOnWindow:(UIWindow *)notification.object];
+    }
+}
+
+- (void)windowBecameKey:(NSNotification *)notification
+{
+    if ([notification.object isKindOfClass:[UIWindow class]]) {
+        [self installButtonOnWindow:(UIWindow *)notification.object];
+    }
+}
+
+- (void)installOnCurrentWindow
+{
+    UIApplication *app = [UIApplication sharedApplication];
+
+    for (UIScene *scene in app.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) {
+            continue;
+        }
+
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+
+        for (UIWindow *window in windowScene.windows) {
+            if (window.isKeyWindow) {
+                [self installButtonOnWindow:window];
+                return;
+            }
+        }
+
+        if (windowScene.windows.count > 0) {
+            [self installButtonOnWindow:windowScene.windows.firstObject];
+            return;
+        }
+    }
+}
+
+- (void)installButtonOnWindow:(UIWindow *)window
+{
+    if (!window) {
+        return;
+    }
+
+    /* 防止重复添加 */
+    if ([window viewWithTag:987654] != nil) {
+        return;
+    }
+
+    self.mainWindow = window;
+
+    CGFloat top = MAX(window.safeAreaInsets.top, 20.0);
+
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+
+    button.tag = 987654;
+
+    button.frame = CGRectMake(
+        window.bounds.size.width - 66.0,
+        top + 6.0,
+        56.0,
+        34.0
+    );
+
+    button.autoresizingMask =
+        UIViewAutoresizingFlexibleLeftMargin |
+        UIViewAutoresizingFlexibleBottomMargin;
+
+    button.backgroundColor =
+        [UIColor colorWithWhite:0.0 alpha:0.75];
+
+    [button setTitle:@"LOG"
+            forState:UIControlStateNormal];
+
+    [button setTitleColor:[UIColor whiteColor]
+                 forState:UIControlStateNormal];
+
+    button.titleLabel.font =
+        [UIFont boldSystemFontOfSize:13.0];
+
+    [button addTarget:self
+               action:@selector(showLog:)
+     forControlEvents:UIControlEventTouchUpInside];
+
+    [window addSubview:button];
+    [window bringSubviewToFront:button];
+
+    fprintf(stderr, "[debug-ui] LOG button installed\n");
+}
+
+- (void)showLog:(UIButton *)sender
+{
+    NSString *content = @"";
+
+    if (gKOReaderLogPath) {
+        NSError *error = nil;
+
+        NSString *fileContent =
+            [NSString stringWithContentsOfFile:gKOReaderLogPath
+                                      encoding:NSUTF8StringEncoding
+                                         error:&error];
+
+        if (fileContent) {
+            content = fileContent;
+        } else {
+            content = [NSString stringWithFormat:
+                @"Unable to read log file:\n%@",
+                error ?: @"unknown error"];
+        }
+    } else {
+        content = @"Log path is not initialized.";
+    }
+
+    /*
+     * Alert 不适合显示几十 KB 内容。
+     * 屏幕只显示最后 8000 字符，但“复制全部”复制完整日志。
+     */
+    NSString *displayContent = content;
+
+    if (displayContent.length > 8000) {
+        displayContent =
+            [NSString stringWithFormat:
+                @"... 前面的日志已省略 ...\n\n%@",
+                [displayContent substringFromIndex:
+                    displayContent.length - 8000]];
+    }
+
+    UIAlertController *alert =
+        [UIAlertController
+            alertControllerWithTitle:@"KOReader Debug Log"
+                             message:displayContent
+                      preferredStyle:UIAlertControllerStyleAlert];
+
+    [alert addAction:
+        [UIAlertAction
+            actionWithTitle:@"复制全部"
+                      style:UIAlertActionStyleDefault
+                    handler:^(UIAlertAction *action) {
+                        [UIPasteboard generalPasteboard].string = content;
+                    }]];
+
+    [alert addAction:
+        [UIAlertAction
+            actionWithTitle:@"关闭"
+                      style:UIAlertActionStyleCancel
+                    handler:nil]];
+
+    UIWindow *window = sender.window ?: self.mainWindow;
+
+    UIViewController *controller = window.rootViewController;
+
+    while (controller.presentedViewController) {
+        controller = controller.presentedViewController;
+    }
+
+    if (controller) {
+        [controller presentViewController:alert
+                                 animated:YES
+                               completion:nil];
+    }
+}
+
+@end
+
+static KOReaderLogOverlay *gKOReaderLogOverlay = nil;
+
+
+/*
+ * stdout / stderr 全部写入 Documents/koreader-ios.log
+ */
+static void KOReaderSetupDebugLog(void)
+{
+    NSArray<NSString *> *docs =
+        NSSearchPathForDirectoriesInDomains(
+            NSDocumentDirectory,
+            NSUserDomainMask,
+            YES);
+
+    if (docs.count == 0) {
+        return;
+    }
+
+    gKOReaderLogPath =
+        [docs[0] stringByAppendingPathComponent:@"koreader-ios.log"];
+
+    const char *path =
+        [gKOReaderLogPath fileSystemRepresentation];
+
+    FILE *fp = freopen(path, "w", stderr);
+
+    if (fp) {
+
+        /*
+         * stdout 和 stderr 写到同一个文件。
+         */
+        dup2(fileno(stderr), fileno(stdout));
+
+        setvbuf(stderr, NULL, _IONBF, 0);
+        setvbuf(stdout, NULL, _IONBF, 0);
+    }
+
+    fprintf(stderr,
+            "\n"
+            "========================================\n"
+            " KOReader iOS Debug Log\n"
+            "========================================\n");
+
+    fprintf(stderr,
+            "[debug] log path: %s\n",
+            path);
+
+    NSString *bundlePath =
+        [[NSBundle mainBundle] bundlePath];
+
+    NSString *resourcePath =
+        [[NSBundle mainBundle] resourcePath];
+
+    fprintf(stderr,
+            "[debug] bundlePath: %s\n",
+            [bundlePath fileSystemRepresentation]);
+
+    fprintf(stderr,
+            "[debug] resourcePath: %s\n",
+            [resourcePath fileSystemRepresentation]);
+
+    NSString *appPath =
+        [resourcePath stringByAppendingPathComponent:@"app"];
+
+    NSString *readerLua =
+        [appPath stringByAppendingPathComponent:@"reader.lua"];
+
+    NSString *frontend =
+        [appPath stringByAppendingPathComponent:@"frontend"];
+
+    NSString *common =
+        [appPath stringByAppendingPathComponent:@"common"];
+
+    NSFileManager *fm =
+        [NSFileManager defaultManager];
+
+    fprintf(stderr,
+            "[debug] app directory exists: %s\n",
+            [fm fileExistsAtPath:appPath] ? "YES" : "NO");
+
+    fprintf(stderr,
+            "[debug] reader.lua exists: %s\n",
+            [fm fileExistsAtPath:readerLua] ? "YES" : "NO");
+
+    fprintf(stderr,
+            "[debug] frontend exists: %s\n",
+            [fm fileExistsAtPath:frontend] ? "YES" : "NO");
+
+    fprintf(stderr,
+            "[debug] common exists: %s\n",
+            [fm fileExistsAtPath:common] ? "YES" : "NO");
+
+    char cwd[PATH_MAX];
+
+    if (getcwd(cwd, sizeof(cwd))) {
+        fprintf(stderr,
+                "[debug] initial cwd: %s\n",
+                cwd);
+    }
+
+    fprintf(stderr,
+            "========================================\n\n");
+}
 int main(int argc, char *argv[]) {
     @autoreleasepool {
+        /*
+         * TEMP DEBUG
+         */
+        KOReaderSetupDebugLog();
+
+        gKOReaderLogOverlay = [KOReaderLogOverlay new];
+        [gKOReaderLogOverlay start];
+
+        fprintf(stderr, "[startup] entered ios_loader main()\n");
         NSString *resourcePath = [[NSBundle mainBundle] resourcePath];
         if (!resourcePath) {
             fprintf(stderr, "[%s]: NSBundle resourcePath is nil\n", LOGNAME);
@@ -48,6 +360,21 @@ int main(int argc, char *argv[]) {
                     [koreaderDir fileSystemRepresentation]);
             return EXIT_FAILURE;
         }
+        fprintf(stderr,
+                "[startup] chdir OK: %s\n",
+                [koreaderDir fileSystemRepresentation]);
+
+        char debugCwd[PATH_MAX];
+
+        if (getcwd(debugCwd, sizeof(debugCwd))) {
+            fprintf(stderr,
+                    "[startup] cwd now: %s\n",
+                    debugCwd);
+        }
+
+        fprintf(stderr,
+            "[startup] reader.lua after chdir: %s\n",
+            access("reader.lua", F_OK) == 0 ? "FOUND" : "MISSING");
 
         if (setenv("LC_ALL", LANGUAGE, 1) != 0) {
             fprintf(stderr, "[%s]: setenv LC_ALL failed\n", LOGNAME);
@@ -79,9 +406,16 @@ int main(int argc, char *argv[]) {
         if (docs.count > 0) {
             setenv("KO_HOME", [docs[0] fileSystemRepresentation], 1);
         }
-
+        fprintf(stderr, "[startup] creating Lua state...\n");
         lua_State *L = luaL_newstate();
+        if (!L) {
+        fprintf(stderr, "[FATAL] luaL_newstate() failed\n");
+        return EXIT_FAILURE;
+        }
+
+        fprintf(stderr, "[startup] Lua state created\n");
         luaL_openlibs(L);
+        fprintf(stderr, "[startup] Lua standard libraries loaded\n");
 
         int retval = luaL_dostring(L, "arg = {}");
         if (retval) {
@@ -99,8 +433,15 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-
+        fprintf(stderr,
+                "[startup] starting reader.lua...\n");
+        
+        fflush(stdout);
+        fflush(stderr);
         retval = luaL_dofile(L, "reader.lua");
+        fprintf(stderr,
+        "[startup] reader.lua returned: %d\n",
+        retval);
         if (retval) {
             fprintf(stderr, LUA_ERROR, lua_tostring(L, -1));
         }
