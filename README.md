@@ -105,7 +105,7 @@ Please check the [user guide](http://koreader.rocks/user_guide/) and the [wiki][
 
 ## Installation
 
-Please follow the model specific steps for your device:
+Please Follow the model specific steps for your device:
 
 [Android](https://github.com/koreader/koreader/wiki/Installation-on-Android-devices) •
 [Cervantes](https://github.com/koreader/koreader/wiki/Installation-on-BQ-devices) •
